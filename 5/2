@@ -184,26 +184,26 @@ int main ()
     // If a bit is set, corresponding port pin is input.
     // IO0_0 - IO0_3 as output, [IO0_7:IO0_0] = 0b00000000
     PCA9555_0_write(REG_CONFIGURATION_0, 0x00); 
-
+ 
     // IO1_0 as output, IO1_4 - IO0_7 as input
     // [IO1_7:IO1_0] = 0b11110000
-    PCA9555_0_write(REG_CONFIGURATION_1, 0xF0);
+    PCA9555_0_write(REG_CONFIGURATION_1, 0xFE);
     
     while(1)
     {
         PCA9555_0_write(REG_OUTPUT_1,0);
         in = PCA9555_0_read(REG_INPUT_1);
-        in = ~in;
+        //in = ~in;
         
-        out = 0;
+        out = 0x00;
 
-        if (in & 0x10) {out |= 0x10;}
+        if (!(in & 0x10)) {out |= 0x01;}
                 
-        if (in & 0x20) {out |= 0x20;}
+        if (!(in & 0x20)) {out |= 0x02;}
 
-        if (in & 0x40) {out |= 0x40;}
+        if (!(in & 0x40)) {out |= 0x04;}
 
-        if (in & 0x80) {out |= 0x80;}
+        if (!(in & 0x80)) {out |= 0x08;}
 
         PCA9555_0_write(REG_OUTPUT_0, out);
     }
