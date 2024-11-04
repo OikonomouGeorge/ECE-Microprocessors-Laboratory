@@ -177,28 +177,35 @@ uint8_t ret_val;
 } 
 void write_2_nibbles(uint8_t input){
     uint8_t temp= input;
-    PORTD = (PIND & 0x0f) + (temp & 0xf0); //LCD Data High Bytes
     
-    PORTD|=0x08; //enable pulse
+    PCA9555_0_write(REG_OUTPUT_0, (PCA9555_0_read(REG_INPUT_0) & 0x0f) + (temp & 0xf0)); //LCD Data High Bytes
+
+    
+    PCA9555_0_write(REG_OUTPUT_0, PCA9555_0_read(REG_INPUT_0) | 0x08); //enable pulse
     _delay_us(2);
-    PORTD&=~(0x08);
-   
+    PCA9555_0_write(REG_OUTPUT_0, PCA9555_0_read(REG_INPUT_0) & (~0x08));
+
     input=(input<<4)|(input>>4);
-    PORTD = (PIND & 0x0f) + (input & 0xf0); //LCD Data Low Bytes
-   
-   PORTD|=0x08;  //enable pulse
+    PCA9555_0_write(REG_OUTPUT_0, (PCA9555_0_read(REG_INPUT_0) & 0x0f) + (input & 0xf0)); //LCD Data Low Bytes
+     
+    PCA9555_0_write(REG_OUTPUT_0, PCA9555_0_read(REG_INPUT_0) | 0x08);
+
     _delay_us(2);
-    PORTD&=~(0x08);    
+    PCA9555_0_write(REG_OUTPUT_0, PCA9555_0_read(REG_INPUT_0) & (~0x08));
+
 };
 
 void lcd_command(uint8_t command){
-    PORTD&=~4; //LCD_RS=0 => Instruction
+    PCA9555_0_write(REG_OUTPUT_0, PCA9555_0_read(REG_INPUT_0) & (~0x04)); //LCD_RS=0 => Instruction
+
+
     write_2_nibbles(command);
     _delay_us(250);
 }
 
 void lcd_data(unsigned char data){
-    PORTD|=4; //LCD_RS=1 => Data
+    PCA9555_0_write(REG_OUTPUT_0, PCA9555_0_read(REG_INPUT_0) | 0x04); //LCD_RS=1 => Data
+
     write_2_nibbles(data);
     _delay_us(250);
 }
@@ -212,17 +219,19 @@ void lcd_init(){
     _delay_ms(200);
     int i=0;
     while(i<3){      //command to switch to 8 bit mode
-        PORTD=0x30;
-        PORTD|=0x08;
+        PCA9555_0_write(REG_OUTPUT_0, 0x030);
+        PCA9555_0_write(REG_OUTPUT_0, PCA9555_0_read(REG_INPUT_0) | 0x08);
         _delay_us(2);
-        PORTD&=~0x08;
+         PCA9555_0_write(REG_OUTPUT_0, PCA9555_0_read(REG_INPUT_0) & (~0x08));
         _delay_us(250);
         ++i;
     }
- PORTD=0x20;     //command to switch to 4 bit mode
-    PORTD|=0x08;
+    PCA9555_0_write(REG_OUTPUT_0, 0x20); //command to switch to 4 bit mode
+    PCA9555_0_write(REG_OUTPUT_0, PCA9555_0_read(REG_INPUT_0) | 0x08); 
+   
     _delay_us(2);
-    PORTD&=~0x08;
+     PCA9555_0_write(REG_OUTPUT_0, PCA9555_0_read(REG_INPUT_0) & (~0x08));
+
     _delay_us(250);
    
     lcd_command(0x28); //5*8 dots, 2 lines
@@ -237,17 +246,24 @@ void lcd_string(char *str){
 }
 
 
-int main ()
+int main()
 {
-   twi_init();
+
+    twi_init();
 
     PCA9555_0_write(REG_CONFIGURATION_0, 0x00);
            
     lcd_init();
-    while(1){
+    while(1)
+    {
     char name[]="Eirini Simitzi";
-        lcd_clear_display();
-        lcd_string(name);
-        _delay_ms(2000);
-    } 
+    lcd_clear_display();
+    lcd_string(name);
+    _delay_ms(1000);
+        
+    char nextname[]="George Oikonomou ";
+    lcd_clear_display();
+    lcd_string(nextname);
+    _delay_ms(1000);
+    }
 }
