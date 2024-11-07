@@ -178,7 +178,7 @@ uint8_t ret_val;
 
 int main ()
 {
-    //PORTΒ [3:0] (A = PORTΒ.0, B = PORTΒ.1, C = PORTΒ.2, D = PORTΒ.3) 
+    //PORT? [3:0] (A = PORT?.0, B = PORT?.1, C = PORT?.2, D = PORT?.3) 
     // Input from PORTB
     DDRB |= 0x00;
     uint8_t A, B, C, D, F0, F1, temp;
@@ -193,12 +193,12 @@ int main ()
         //F0 = (A'BC + B'D)'
         //F1 = (A + B + C)(BD')
         A= 0x01 & PINB;
-        B= 0x02 & PINB;
-        C= 0x04 & PINB;
-        D= 0x08 & PINB;
+        B= (0x02 & PINB) >> 1;
+        C= (0x04 & PINB) >> 2;
+        D= (0x08 & PINB) >> 3;
         
-        F0= ~(( ~A & B & C ) | (~B & D));
-        F1= (A | B | C) & (B & ( ~D ));
+        F0= ~((~A & B & C) | (~B & D)) & 0x01;
+        F1= (A | B | C) & (B & ~D) & 0x01;
         temp = (F0 | (F1<<1)) & 0x03;
         
         PCA9555_0_write(REG_OUTPUT_0, temp);
