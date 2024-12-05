@@ -1,0 +1,748 @@
+#define F_CPU 16000000UL
+#include<avr/io.h>
+#include<avr/interrupt.h>
+#include<util/delay.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <avr/pgmspace.h>
+#include <stdio.h>
+#include <math.h>
+
+#define PCA9555_0_ADDRESS 0x40 //A0=A1=A2=0 by hardware
+#define TWI_READ 1 // reading from twi device
+#define TWI_WRITE 0 // writing to twi device
+#define SCL_CLOCK 100000L // twi clock in Hz
+//Fscl=Fcpu/(16+2*TWBR0_VALUE*PRESCALER_VALUE)
+#define TWBR0_VALUE ((F_CPU/SCL_CLOCK)-16)/2
+
+// PCA9555 REGISTERS
+typedef enum {
+ REG_INPUT_0 = 0,
+ REG_INPUT_1 = 1,
+ REG_OUTPUT_0 = 2,
+ REG_OUTPUT_1 = 3,
+ REG_POLARITY_INV_0 = 4,
+ REG_POLARITY_INV_1 = 5,
+ REG_CONFIGURATION_0 = 6,
+ REG_CONFIGURATION_1 = 7
+} PCA9555_REGISTERS;
+
+//----------- Master Transmitter/Receiver -------------------
+#define TW_START 0x08
+#define TW_REP_START 0x10
+//---------------- Master Transmitter ----------------------
+#define TW_MT_SLA_ACK 0x18
+#define TW_MT_SLA_NACK 0x20
+#define TW_MT_DATA_ACK 0x28
+//---------------- Master Receiver ----------------
+#define TW_MR_SLA_ACK 0x40
+#define TW_MR_SLA_NACK 0x48
+#define TW_MR_DATA_NACK 0x58
+#define TW_STATUS_MASK 0b11111000
+#define TW_STATUS (TWSR0 & TW_STATUS_MASK)
+
+// Initialize TWI clock
+void twi_init(void)
+{
+ TWSR0 = 0; // PRESCALER_VALUE=1
+ TWBR0 = TWBR0_VALUE; // SCL_CLOCK 100KHz
+}
+
+// Read one byte from the twi device (request more data from device)
+unsigned char twi_readAck(void)
+{
+TWCR0 = (1<<TWINT) | (1<<TWEN) | (1<<TWEA);
+while(!(TWCR0 & (1<<TWINT)));
+ return TWDR0;
+}
+
+//Read one byte from the twi device, read is followed by a stop condition
+unsigned char twi_readNak(void)
+{
+TWCR0 = (1<<TWINT) | (1<<TWEN);
+while(!(TWCR0 & (1<<TWINT)));
+ return TWDR0;
+}
+
+// Issues a start condition and sends address and transfer direction.
+// return 0 = device accessible, 1= failed to access device
+unsigned char twi_start(unsigned char address)
+{
+ uint8_t twi_status;
+// send START condition
+TWCR0 = (1<<TWINT) | (1<<TWSTA) | (1<<TWEN);
+// wait until transmission completed
+while(!(TWCR0 & (1<<TWINT)));
+// check value of TWI Status Register.
+twi_status = TW_STATUS & 0xF8;
+if ( (twi_status != TW_START) && (twi_status != TW_REP_START)) return 1;
+// send device address
+TWDR0 = address;
+TWCR0 = (1<<TWINT) | (1<<TWEN);
+// wail until transmission completed and ACK/NACK has been received
+while(!(TWCR0 & (1<<TWINT)));
+// check value of TWI Status Register.
+twi_status = TW_STATUS & 0xF8;
+if ( (twi_status != TW_MT_SLA_ACK) && (twi_status != TW_MR_SLA_ACK) )
+ {
+ return 1;
+ }
+return 0;
+}
+
+// Send start condition, address, transfer direction.
+// Use ack polling to wait until device is ready
+void twi_start_wait(unsigned char address)
+{
+ uint8_t twi_status;
+ while ( 1 )
+ {
+// send START condition
+TWCR0 = (1<<TWINT) | (1<<TWSTA) | (1<<TWEN);
+
+ // wait until transmission completed
+ while(!(TWCR0 & (1<<TWINT)));
+
+ // check value of TWI Status Register.
+ twi_status = TW_STATUS & 0xF8;
+ if ( (twi_status != TW_START) && (twi_status != TW_REP_START)) continue;
+
+ // send device address
+ TWDR0 = address;
+ TWCR0 = (1<<TWINT) | (1<<TWEN);
+
+ // wail until transmission completed
+ while(!(TWCR0 & (1<<TWINT)));
+
+ // check value of TWI Status Register.
+ twi_status = TW_STATUS & 0xF8;
+ if ( (twi_status == TW_MT_SLA_NACK )||(twi_status ==TW_MR_DATA_NACK) )
+ {
+ /* device busy, send stop condition to terminate write operation */
+ TWCR0 = (1<<TWINT) | (1<<TWEN) | (1<<TWSTO);
+
+ // wait until stop condition is executed and bus released
+ while(TWCR0 & (1<<TWSTO));
+
+ continue;
+ }
+break;
+ }
+}
+
+// Send one byte to twi device, Return 0 if write successful or 1 if write failed
+unsigned char twi_write( unsigned char data )
+{
+// send data to the previously addressed device
+TWDR0 = data;
+TWCR0 = (1<<TWINT) | (1<<TWEN);
+// wait until transmission completed
+while(!(TWCR0 & (1<<TWINT)));
+if( (TW_STATUS & 0xF8) != TW_MT_DATA_ACK) return 1;
+return 0;
+}
+
+// Send repeated start condition, address, transfer direction
+//Return: 0 device accessible
+// 1 failed to access device
+unsigned char twi_rep_start(unsigned char address)
+{
+ return twi_start( address );
+}
+
+// Terminates the data transfer and releases the twi bus
+void twi_stop(void)
+{
+ // send stop condition
+TWCR0 = (1<<TWINT) | (1<<TWEN) | (1<<TWSTO);
+// wait until stop condition is executed and bus released
+while(TWCR0 & (1<<TWSTO));
+}
+
+void PCA9555_0_write(PCA9555_REGISTERS reg, uint8_t value)
+{
+ twi_start_wait(PCA9555_0_ADDRESS + TWI_WRITE);
+ twi_write(reg);
+ twi_write(value);
+ twi_stop();
+}
+
+uint8_t PCA9555_0_read(PCA9555_REGISTERS reg)
+{
+uint8_t ret_val;
+
+ twi_start_wait(PCA9555_0_ADDRESS + TWI_WRITE);
+ twi_write(reg);
+ twi_rep_start(PCA9555_0_ADDRESS + TWI_READ);
+ ret_val = twi_readNak();
+ twi_stop();
+ 
+ return ret_val;
+} 
+
+void write_2_nibbles(uint8_t input){
+    uint8_t temp= input;
+    
+    PCA9555_0_write(REG_OUTPUT_0, (PCA9555_0_read(REG_INPUT_0) & 0x0f) + (temp & 0xf0)); //LCD Data High Bytes
+
+    
+    PCA9555_0_write(REG_OUTPUT_0, PCA9555_0_read(REG_INPUT_0) | 0x08); //enable pulse
+    _delay_us(2);
+    PCA9555_0_write(REG_OUTPUT_0, PCA9555_0_read(REG_INPUT_0) & (~0x08));
+
+    input=(input<<4)|(input>>4);
+    PCA9555_0_write(REG_OUTPUT_0, (PCA9555_0_read(REG_INPUT_0) & 0x0f) + (input & 0xf0)); //LCD Data Low Bytes
+     
+    PCA9555_0_write(REG_OUTPUT_0, PCA9555_0_read(REG_INPUT_0) | 0x08);
+
+    _delay_us(2);
+    PCA9555_0_write(REG_OUTPUT_0, PCA9555_0_read(REG_INPUT_0) & (~0x08));
+
+};
+
+void lcd_command(uint8_t command){
+    PCA9555_0_write(REG_OUTPUT_0, PCA9555_0_read(REG_INPUT_0) & (~0x04)); //LCD_RS=0 => Instruction
+
+
+    write_2_nibbles(command);
+    _delay_us(250);
+}
+
+void lcd_data(unsigned char data){
+    PCA9555_0_write(REG_OUTPUT_0, PCA9555_0_read(REG_INPUT_0) | 0x04); //LCD_RS=1 => Data
+
+    write_2_nibbles(data);
+    _delay_us(250);
+}
+
+void lcd_clear_display(){
+    lcd_command(0x01); //for most led screens
+    _delay_ms(5);
+}
+
+void lcd_init(){
+    _delay_ms(200);
+    int i=0;
+    while(i<3){      //command to switch to 8 bit mode
+        PCA9555_0_write(REG_OUTPUT_0, 0x030);
+        PCA9555_0_write(REG_OUTPUT_0, PCA9555_0_read(REG_INPUT_0) | 0x08);
+        _delay_us(2);
+         PCA9555_0_write(REG_OUTPUT_0, PCA9555_0_read(REG_INPUT_0) & (~0x08));
+        _delay_us(250);
+        ++i;
+    }
+    PCA9555_0_write(REG_OUTPUT_0, 0x20); //command to switch to 4 bit mode
+    PCA9555_0_write(REG_OUTPUT_0, PCA9555_0_read(REG_INPUT_0) | 0x08); 
+   
+    _delay_us(2);
+     PCA9555_0_write(REG_OUTPUT_0, PCA9555_0_read(REG_INPUT_0) & (~0x08));
+
+    _delay_us(250);
+   
+    lcd_command(0x28); //5*8 dots, 2 lines
+    lcd_command(0x0c); //display on, cursor off
+   
+    lcd_clear_display();
+}
+
+void lcd_string(const char *str){
+    int i;
+    for(i=0; str[i]!=0; i++) lcd_data(str[i]);
+}
+
+/*
+------- INITIALIZATIONS -------
+Baud rate: 9600 (Fck = 16MH)
+Asynchronous mode
+Transmitter on
+Receiver on
+return value: None.*/
+void usart_init(unsigned int ubrr){
+    UCSR0A=0;
+    UCSR0B=(1<<RXEN0)|(1<<TXEN0);
+    UBRR0H=(unsigned char)(ubrr>>8);
+    UBRR0L=(unsigned char)ubrr;
+    UCSR0C=(3 << UCSZ00);
+    return;
+}
+
+void usart_transmit(uint8_t data){
+    while(!(UCSR0A&(1<<UDRE0)));
+    UDR0=data;
+}
+
+void usart_transmit_string(const char str[]){
+    int i;
+    for(i=0; str[i]!='\0'; i++) usart_transmit(str[i]);
+}
+
+uint8_t usart_receive(){
+    while(!(UCSR0A&(1<<RXC0)));
+    return UDR0;
+}
+
+void usart_receive_string(char str[])
+{
+    char buffer;
+    int i = 0;
+    while((buffer = usart_receive()) != '\n')
+    {
+        str[i++] = buffer;
+    }
+    
+    str[i] = '\0';
+}
+
+uint8_t one_wire_reset() {
+  DDRD |= (1 << PD4);
+  PORTD &= ~(1 << PD4);
+  _delay_us(480);
+
+  DDRD &= ~(1 << PD4);
+  PORTD &= ~(1 << PD4);
+  _delay_us(100);
+
+  uint8_t input = PIND;
+  _delay_us(380);
+
+  return !(input & (1 << PD4));
+
+}
+
+uint8_t one_wire_receive_bit() {
+  DDRD |= (1 << PD4);
+  PORTD &= ~(1 << PD4);
+  _delay_us(2);
+
+  DDRD &= ~(1 << PD4);
+  PORTD &= ~(1 << PD4);
+  _delay_us(10);
+
+  uint8_t input = PIND;
+  _delay_us(49);
+  return (input & (1 << PD4)) != 0;
+
+}
+
+void one_wire_transmit_bit(uint8_t data){
+  DDRD |= (1 << PD4);
+  PORTD &= ~(1 << PD4);
+  _delay_us(2);
+
+  PORTD|=(data<<PD4);
+  _delay_us(58);
+
+  DDRD &= ~(1 << PD4);
+  PORTD &= ~(1 << PD4);
+  _delay_us(1);
+}
+
+uint8_t one_wire_receive_byte(){
+  uint8_t i=0;
+  uint8_t receive_result=0;
+  while(i<8){
+    receive_result+= (one_wire_receive_bit()<<i);
+    i++;
+  }
+  return receive_result;
+}
+
+void one_wire_transmit_byte(uint8_t data){
+  uint8_t i=0;
+  while(i<8){
+    one_wire_transmit_bit(data & 0x01);
+    data=data>>1;
+    i++;
+  }
+}
+
+uint8_t r24, r25;
+
+void getvalue(){
+  if(!one_wire_reset()){
+    r24=0x080;
+    r25=0x00;
+    return;
+  }
+
+  one_wire_transmit_byte(0xCC);
+  one_wire_transmit_byte(0x44);
+
+  while(one_wire_receive_bit()!=1);
+
+  if(!one_wire_reset()){
+    r24=0x80;
+    r25=0x00;
+    return;
+  }
+  
+  one_wire_transmit_byte(0xCC);
+  one_wire_transmit_byte(0xBE);
+
+  r25=one_wire_receive_byte();
+  r24=one_wire_receive_byte();
+}
+
+void floatToString(float number, char* result) {
+    // Separate the integer part
+    int intPart = (int)number;
+
+    // Convert integer part to string
+    sprintf(result, "%d", intPart);
+
+    // Move the pointer to the end of the integer part in the string
+    while (*result != '\0') {
+        result++;
+    }
+
+    // Add the decimal point
+    *result++ = '.';
+
+    // Separate the fractional part and scale it to 3 decimal places
+    float fracPart = number - intPart;
+    int fracAsInt = (int)(fracPart * 10);  // Scale to 3 decimal places
+
+    // Convert fractional part to string with 3 digits
+    sprintf(result, "%01d", fracAsInt);
+}
+
+uint8_t scan_row(uint8_t row){
+    uint8_t flag = 00000001;
+    flag = flag <<row; //create row index 
+    flag = ~flag; //set to zero
+    PCA9555_0_write(REG_OUTPUT_1,flag);
+    uint8_t input = PCA9555_0_read(REG_INPUT_1)>>4;
+    
+    return input;
+   }
+
+uint16_t scan_keypad(){
+    uint16_t result=0;
+    result= (scan_row(0)) + (scan_row(1) << 4) + (scan_row(2) << 8) +(scan_row(3) << 12);
+      
+    return result;
+}
+
+uint16_t scan_keyboard_rising_edge(){
+    uint16_t pressed_keys = scan_keypad();
+    _delay_ms(20);
+    uint16_t pressed_keys_tempo = scan_keypad();
+    
+    return (~pressed_keys & ~pressed_keys_tempo);
+} 
+
+uint8_t keypad_to_ascii(){
+
+        switch(scan_keyboard_rising_edge()) {
+        case 0: return 0;
+        case 1: return '*';
+        case 2: return '0';
+        case 4: return '#';
+        case 8: return 'D';
+        case 16: return '7';
+        case 32: return '8';
+        case 64: return '9';
+        case 128: return 'C';
+        case 256: return '4';
+        case 512: return '5';
+        case 1024: return '6';
+        case 2048: return 'B';
+        case 4096: return '1';
+        case 8192: return '2';
+        case 16384: return '3';
+        case 32768: return 'A';
+    }
+        return 0;
+}
+
+char payload[400];
+
+void payload_add(const char *key, const char *value){
+    strcat(payload, "{\"name\": \"");
+    strcat(payload, key);
+    strcat(payload, "\",\"value\": \"");
+    strcat(payload, value);
+    strcat(payload, "\"},");
+}
+
+int main ()
+{
+   twi_init(); 
+   PCA9555_0_write(REG_CONFIGURATION_0, 0x00);
+   PCA9555_0_write(REG_CONFIGURATION_1, 0xF0);
+   lcd_init();
+   
+   // flag = 1 if already connected successfully, 0 otherwise 
+   int flag = 0;
+   
+   // ESP8266: Waiting for command, 'Waiting for command\0' = 20 
+   char restart_message[20];
+   char connect_message[20];
+  
+   usart_init(103);
+   usart_transmit_string("ESP:restart\n");
+   usart_receive_string(restart_message);
+   lcd_clear_display();
+   
+   while(1)
+   {
+       // lcd_clear_display();
+       usart_transmit_string("ESP:connect\n");
+       usart_receive_string(connect_message);
+       
+       if (strcmp(connect_message, "\"Success\"") == 0)
+       {
+           flag = 1;
+           lcd_string("1.Success");
+           _delay_ms(1000);
+           lcd_clear_display();
+       }
+       
+       else
+       {
+           flag = 0;
+           lcd_string("1.Fail");
+           _delay_ms(1000);
+           lcd_clear_display();
+       }
+       
+       while(flag == 0)
+       {
+           usart_transmit_string("ESP:connect\n");
+           usart_receive_string(connect_message);
+           
+           // "\"Success\""
+           if (strcmp(connect_message, "\"Success\"") == 0)
+           {
+               flag = 1;
+               lcd_string("1.Success");
+               _delay_ms(1000);
+               lcd_clear_display();
+           }
+       
+           else
+           {
+                flag = 0;
+                lcd_string("1.Fail");
+                _delay_ms(1000);
+                lcd_clear_display();
+           }
+       }
+  
+       flag = 0;
+       
+       // "ESP:url:\"http://192.168.1.250:5000/data\"" TO TEST WITH \n
+       usart_transmit_string("ESP:url:\"http://192.168.1.250:5000/data\"");
+       usart_receive_string(connect_message);
+       
+       if (strcmp(connect_message, "\"Success\"") == 0)
+       {
+           flag = 1;
+           lcd_string("2.Success");
+           _delay_ms(1000);
+           lcd_clear_display();
+       }
+       
+       else
+       {
+           flag = 0;
+           lcd_string("2.Fail");
+           _delay_ms(1000);
+           lcd_clear_display();
+       }
+       
+       while(flag == 0)
+       {
+           usart_transmit_string("ESP:url:\"http://192.168.1.250:5000/data\"\n");
+           usart_receive_string(connect_message);
+           
+           if (strcmp(connect_message, "\"Success\"") == 0)
+           {
+               flag = 1;
+               lcd_string("2.Success");
+               _delay_ms(1000);
+               lcd_clear_display();
+           }
+       
+           else
+           {
+                flag = 0;
+                lcd_string("2.Fail");
+                _delay_ms(1000);
+                lcd_clear_display();
+           }
+       }
+       
+       //flag = 0;
+       
+       while(1){     
+           
+           // Temperature 
+           getvalue();
+           
+           if(r24==0x80 && r25==0x00)
+           {
+               // nop               
+               continue;
+           }
+           
+           uint16_t temperature = (uint16_t)((r24 << 8) | r25);
+           
+           if(r24 & 10000000)
+           {
+               temperature=~temperature+1;
+               // nop
+               // lcd_data('-');
+           }
+           
+           else 
+           {
+               //lcd_data('+');}
+           }
+           
+           float temperature_new = temperature * 0.0625 * 1.47;         
+           char temperature_string[5];
+           floatToString(temperature_new, temperature_string);
+           temperature_string[4] = '\0';
+           
+           lcd_string(temperature_string);
+           lcd_data(223);   //code for degree symbol
+           lcd_data('C');
+           lcd_data(' ');
+           
+           // Pressure
+           // MUX[3:0] = 0000 for ADC0
+           // REFS[1:0] = 01 for AVCC with external capacitor at AREF pin
+           ADMUX |= 0b01000000;
+           // ADIE = 1 => enable ADC interrupt, 
+           // ADPS[2:0] = 111 => fADC = 16MHz/128 = 125KHz
+           ADCSRA |= 0b10001111; 
+   
+           ADCSRA |= (1<<ADSC);         // ADSC: ADC Start Conversion, Start ADC
+   
+           while(ADCSRA & (1<<ADSC));
+           float pressure = ADC/50.0;   // 1024/50 = 20..
+           
+           char pressure_string[5];
+           floatToString(pressure, pressure_string);
+           pressure_string[4] = '\0';
+           
+           lcd_string(pressure_string);
+           lcd_string("cmH2O ");
+           
+           // Keyboard
+           const char *status;
+           status = "OK";
+           
+           if (keypad_to_ascii() == '0')
+           {
+               status = "NURSE CALL";
+           }
+   
+           if (keypad_to_ascii() == '#')
+           {
+               if ((temperature_new < 34) || (temperature_new > 37))
+               {
+                   status = "CHECK TEMP";
+               }
+               
+               else if ((pressure < 4.0) || (pressure > 12.0))
+               {
+                   status = "CHECK PRESSURE";
+               }
+               
+               else
+               {
+                   status = "OK"; 
+               }
+           }
+           
+           // char team[] = "30";
+           
+           // snprintf(payload, sizeof(payload), 
+           // "ESP:payload:[{\"name\": \"temperature\",\"value\": \"%s\"},"
+           // "{\"name\": \"pressure\",\"value\": \"%s\"},"
+           // "{\"name\": \"team\",\"value\": \"%s\"},"
+           // "{\"name\": \"status\",\"value\": \"%s\"}]\n",
+           // temperature_string, pressure_string, team, status);
+           
+            // snprintf(payload, sizeof(payload), 
+            // "ESP:payload:[{\"name\":\"pressure\",\"value\":\"%s\"},"
+            // "{\"name\":\"temperature\",\"value\":\"%s\"},"
+            // "{\"name\":\"team\",\"value\":\"%s\"},"
+            // "{\"name\":\"status\",\"value\":\"%s\"}]\n",
+            // pressure_string, temperature_string, team, status);
+           
+           
+           strcpy(payload, "ESP:payload:[");
+           payload_add("temperature", temperature_string);
+           payload_add("pressure", pressure_string);
+           payload_add("team", "30");
+           payload_add("status", status);
+           payload[strlen(payload) - 1] = '\0';
+           strcat(payload, "]\n");
+           
+           // lcd_string(pressure_string);
+           // lcd_string("cmH2O ");
+           lcd_command(0xC0);           
+           lcd_string(status);
+   
+           _delay_ms(1000);
+           lcd_clear_display();
+
+           // old version here
+           usart_transmit_string(payload);
+           usart_receive_string(connect_message);
+           
+           if (strcmp(connect_message, "\"Success\"") == 0)
+           {
+               flag = 1;
+               lcd_string("3.Success");
+               _delay_ms(1000);
+               lcd_clear_display();
+           }
+       
+           else
+           {
+               flag = 0;
+               lcd_string("3.Fail");
+               _delay_ms(1000);
+               lcd_clear_display();
+           }
+           
+           while(flag == 0)
+           {
+               //usart_transmit_string("ESP:payload:[{\"name\": \"team\",\"value\": \"30\"}]\n");
+               usart_transmit_string(payload);
+               usart_receive_string(connect_message);
+           
+               if (strcmp(connect_message, "\"Success\"") == 0)
+               {
+                   flag = 1;
+                   lcd_string("3.Success");
+                   _delay_ms(1000);
+                   lcd_clear_display();
+               }
+               
+               else
+               {
+                   flag = 0;
+                   lcd_string("3.Fail");
+                   _delay_ms(1000);
+                   lcd_clear_display();
+               }
+           }     
+           
+           flag = 0;
+           
+           usart_transmit_string("ESP:transmit\n");
+           usart_receive_string(connect_message);
+           lcd_clear_display();
+           lcd_string("4.");
+           lcd_string(connect_message);
+           lcd_command(0xC0);
+           _delay_ms(2000);
+       }
+   }
+}
