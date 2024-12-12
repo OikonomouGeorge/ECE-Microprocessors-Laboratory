@@ -164,11 +164,12 @@ uint8_t ret_val;
 
  return ret_val;
 }
+
 uint8_t scan_row(uint8_t row){
     uint8_t flag = 00000001;
-    flag = flag <<row; //create row index 
-    flag = ~flag; //set to zero
-    PCA9555_0_write(REG_OUTPUT_1,flag);
+    flag = flag << row;  //create row index 
+    flag = ~ flag;       //set to zero
+    PCA9555_0_write(REG_OUTPUT_1, flag);
     uint8_t input = PCA9555_0_read(REG_INPUT_1)>>4;
     
     return input;
@@ -176,14 +177,14 @@ uint8_t scan_row(uint8_t row){
 
 uint16_t scan_keypad(){
     uint16_t result=0;
-    result= (scan_row(0)) + (scan_row(1) << 4) + (scan_row(2) << 8) +(scan_row(3) << 12);
+    result = (scan_row(0)) + (scan_row(1) << 4) + (scan_row(2) << 8) +(scan_row(3) << 12);
       
     return result;
 }
 
 uint16_t scan_keyboard_rising_edge(){
     uint16_t pressed_keys = scan_keypad();
-    _delay_ms(10);
+    _delay_ms(20);
     uint16_t pressed_keys_tempo = scan_keypad();
     
     return (~pressed_keys & ~pressed_keys_tempo);
@@ -191,23 +192,26 @@ uint16_t scan_keyboard_rising_edge(){
 
 uint8_t keypad_to_ascii(){
 
-    if (scan_keyboard_rising_edge() == 32768) {return 'A';}
-    if (scan_keyboard_rising_edge() == 32768/2) {return '3';}
-    if (scan_keyboard_rising_edge() == 32768/4) {return '2';}
-    if (scan_keyboard_rising_edge() == 32768/8) { return '1';}
-    if (scan_keyboard_rising_edge() == 32768/16) {return 'B';}
-    if (scan_keyboard_rising_edge() == 32768/32) {return '6';}
-    if (scan_keyboard_rising_edge() == 32768/64) {return '5';}
-    if (scan_keyboard_rising_edge() == 32768/128) {return '4';}
-    if (scan_keyboard_rising_edge() == 32768/256) {return 'C';}
-    if (scan_keyboard_rising_edge() == 32768/512) {return '9';}
-    if (scan_keyboard_rising_edge() == 32768/1024) {return '8';}
-    if (scan_keyboard_rising_edge() == 32768/2048) {return '7';}
-    if (scan_keyboard_rising_edge() == 32768/4096) {return 'D';}
-    if (scan_keyboard_rising_edge() == 32768/8192) {return '#';}
-    if (scan_keyboard_rising_edge() == 32768/16384) {return '0';}
-    if (scan_keyboard_rising_edge() == 1) {return '*';}
-    if (scan_keyboard_rising_edge() == 0) {return 0;}
+        switch(scan_keyboard_rising_edge()) {
+        case 0: return 0;
+        case 1: return '*';
+        case 2: return '0';
+        case 4: return '#';
+        case 8: return 'D';
+        case 16: return '7';
+        case 32: return '8';
+        case 64: return '9';
+        case 128: return 'C';
+        case 256: return '4';
+        case 512: return '5';
+        case 1024: return '6';
+        case 2048: return 'B';
+        case 4096: return '1';
+        case 8192: return '2';
+        case 16384: return '3';
+        case 32768: return 'A';
+    }
+        return 0;
 }
 
 void write_2_nibbles(uint8_t input){
@@ -271,9 +275,10 @@ int main(void)
     twi_init();
     DDRD |= 0xFF;
     
-    //PCA9555_0_write(REG_CONFIGURATION_0, 0x00);
+    // PCA9555_0_write(REG_CONFIGURATION_0, 0x00);
     // IO1_0 as output, IO1_4 - IO0_7 as input
     // [IO1_7:IO1_0] = 0b11110000
+    
     PCA9555_0_write(REG_CONFIGURATION_1, 0xF0);
     lcd_init();
     lcd_clear_display();
